@@ -1,0 +1,5 @@
+# Phase 1 dependencies.
+# Only one external dependency so far: python-dotenv, used to load
+# configuration (and, later, secrets) from a git-ignored .env file.
+# Everything else relies on the Python standard library.
+python-dotenv==1.0.1
