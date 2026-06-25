@@ -1,15 +1,15 @@
-"""Locating and date-validating report files on disk.
+"""Locating and validating report files on disk.
 
-Phase 2 + 3 scope
------------------
+Phase 2 + 3 + 4 scope
+---------------------
 * Phase 2 — ``find_latest_pdf``: find the newest PDF (by modification time)
   inside the configured report directory.
 * Phase 3 — ``validate_report_filename``: confirm the chosen file's name
   contains today's (server local) date written as ``YYYY-MM-DD``. The rest of
   the filename can be anything; only the date matters here.
-
-This module still does NOT check the PDF magic bytes or the file's
-modification time — those file-content checks arrive in Phase 4.
+* Phase 4 — ``is_pdf_file`` / ``validate_modification_date``: confirm the file
+  really is a PDF (``%PDF-`` magic bytes) and that its modification time falls
+  on today's date.
 
 The directory is taken from configuration and is never hardcoded here.
 """
@@ -17,7 +17,7 @@ The directory is taken from configuration and is never hardcoded here.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import config
@@ -27,6 +27,9 @@ logger = get_logger(__name__)
 
 # Only files with this (case-insensitive) suffix are considered PDFs here.
 _PDF_SUFFIX = ".pdf"
+
+# Every valid PDF begins with this signature, e.g. "%PDF-1.7".
+_PDF_MAGIC = b"%PDF-"
 
 # Matches any ISO-style date token (YYYY-MM-DD) appearing anywhere in the
 # filename. The filename is otherwise unconstrained — only the presence of
@@ -133,5 +136,77 @@ def validate_report_filename(path: Path, today: date | None = None) -> bool:
 
     logger.info(
         "Filename date matches today (%s): %s", today.isoformat(), filename
+    )
+    return True
+
+
+def is_pdf_file(path: Path) -> bool:
+    """Check that ``path`` really is a PDF by inspecting its magic bytes.
+
+    A genuine PDF starts with the ``%PDF-`` signature. This catches files that
+    merely *look* like PDFs by name (e.g. a renamed text file) and truncated
+    or empty files.
+
+    Args:
+        path: The candidate report file.
+
+    Returns:
+        ``True`` if the file begins with the PDF signature, else ``False``.
+    """
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(len(_PDF_MAGIC))
+    except OSError as exc:
+        logger.error("Could not read file to verify PDF header: %s (%s)", path, exc)
+        return False
+
+    if header != _PDF_MAGIC:
+        logger.error(
+            "File is not a valid PDF (missing %r signature): %s",
+            _PDF_MAGIC,
+            path,
+        )
+        return False
+
+    logger.info("Confirmed PDF signature: %s", path)
+    return True
+
+
+def validate_modification_date(path: Path, today: date | None = None) -> bool:
+    """Check that ``path``'s modification time falls on today's date.
+
+    Guards against a stale file lingering in the directory: even if the name
+    carries today's date, the file itself must have been written today.
+
+    Args:
+        path: The candidate report file.
+        today: Date to compare against. Defaults to ``date.today()`` (server
+            local date); injectable so tests are not tied to the real clock.
+
+    Returns:
+        ``True`` if the file's mtime date equals ``today``, else ``False``.
+    """
+    today = today or date.today()
+
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as exc:
+        logger.error("Could not read modification time: %s (%s)", path, exc)
+        return False
+
+    # Convert the mtime to a local-time date for comparison with `today`.
+    mtime_date = datetime.fromtimestamp(mtime).date()
+
+    if mtime_date != today:
+        logger.error(
+            "File modification date %s is not today's date %s: %s",
+            mtime_date.isoformat(),
+            today.isoformat(),
+            path,
+        )
+        return False
+
+    logger.info(
+        "File modification date matches today (%s): %s", today.isoformat(), path
     )
     return True
