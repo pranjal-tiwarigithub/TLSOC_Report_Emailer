@@ -92,13 +92,14 @@ EMAIL_BCC: list[str] = _split_csv(os.getenv("EMAIL_BCC", ""))
 # Admin address(es) that receive failure alerts (Phase 5 decision).
 ALERT_EMAIL_TO: list[str] = _split_csv(os.getenv("ALERT_EMAIL_TO", ""))
 
-# Fixed subject and body per the project spec.
-EMAIL_SUBJECT: str = os.getenv("EMAIL_SUBJECT", "Daily Web Report")
+# Subject base (today's date is appended at send time) and body.
+EMAIL_SUBJECT: str = os.getenv("EMAIL_SUBJECT", "ASC Web Monitoring Report")
 EMAIL_BODY: str = (
-    "Hello,\n\n"
-    "This is today's web report.\n\n"
+    "Hello Team,\n\n"
+    "This is your ASC Web Monitoring Report for today.\n"
+    "For any further details, kindly contact the TLSOC team.\n"
     "Regards,\n"
-    "TLSOC\n"
+    "Team TLSOC\n"
 )
 
 

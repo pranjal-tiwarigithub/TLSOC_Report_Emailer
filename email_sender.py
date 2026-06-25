@@ -22,6 +22,7 @@ git-ignored ``.env``); they are never hardcoded or logged.
 from __future__ import annotations
 
 import smtplib
+from datetime import date
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -135,10 +136,12 @@ def send_report_email(pdf_path: Path, *, dry_run: bool = False) -> bool:
         ``True`` on success (or successful dry-run), ``False`` on failure.
     """
     recipients = _all_recipients(config.EMAIL_TO, config.EMAIL_CC, config.EMAIL_BCC)
+    # Append today's date to the subject, e.g. "ASC Web Monitoring Report - 2026-06-25".
+    subject = f"{config.EMAIL_SUBJECT} - {date.today().isoformat()}"
     try:
         _validate_email_config(recipients)
         message = _build_message(
-            subject=config.EMAIL_SUBJECT,
+            subject=subject,
             body=config.EMAIL_BODY,
             to=config.EMAIL_TO,
             cc=config.EMAIL_CC,
