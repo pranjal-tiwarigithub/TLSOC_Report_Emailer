@@ -35,6 +35,11 @@ def _resolve_path(raw: str) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
+def _split_csv(raw: str) -> list[str]:
+    """Split a comma-separated string into a clean list of non-empty items."""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # --- Monitored report directory (configurable, never hardcoded) ------------
 # Default mirrors the production location, but any deployment can override it
 # by setting REPORT_DIR in .env or the environment.
@@ -45,3 +50,32 @@ REPORT_DIR: Path = Path(
 # --- Logging settings -------------------------------------------------------
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE: Path = _resolve_path(os.getenv("LOG_FILE", "logs/sender.log"))
+
+# --- SMTP / email settings (Phase 5) ---------------------------------------
+# Gmail SMTP defaults; overridable via .env. Port 587 uses STARTTLS.
+SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+
+# Secrets — provided via .env only, NEVER hardcoded. Empty until you set them.
+SMTP_USER: str = os.getenv("SMTP_USER", "")          # Gmail username/address
+SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")  # Gmail App Password
+
+# Sender address. Defaults to the SMTP username when not set separately.
+EMAIL_FROM: str = os.getenv("EMAIL_FROM", "") or SMTP_USER
+
+# Recipients — comma-separated lists in .env (To / CC / BCC).
+EMAIL_TO: list[str] = _split_csv(os.getenv("EMAIL_TO", ""))
+EMAIL_CC: list[str] = _split_csv(os.getenv("EMAIL_CC", ""))
+EMAIL_BCC: list[str] = _split_csv(os.getenv("EMAIL_BCC", ""))
+
+# Admin address(es) that receive failure alerts (Phase 5 decision).
+ALERT_EMAIL_TO: list[str] = _split_csv(os.getenv("ALERT_EMAIL_TO", ""))
+
+# Fixed subject and body per the project spec.
+EMAIL_SUBJECT: str = os.getenv("EMAIL_SUBJECT", "Daily Web Report")
+EMAIL_BODY: str = (
+    "Hello,\n\n"
+    "This is today's web report.\n\n"
+    "Regards,\n"
+    "TLSOC\n"
+)

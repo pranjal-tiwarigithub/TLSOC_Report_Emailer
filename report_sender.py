@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """Daily Report Sender — application entry point.
 
-Phase 4 scope
+Phase 5 scope
 -------------
-The orchestrator now runs the full validation chain:
+The orchestrator runs the full pipeline:
 
 * initialises logging and logs a startup banner,
 * locates the newest PDF in the configured report directory,
-* validates that the filename contains today's date (YYYY-MM-DD),
-* confirms the file really is a PDF (magic bytes), and
-* confirms the file's modification time falls on today's date.
+* validates filename date, PDF magic bytes, and modification date,
+* emails the validated report (PDF attached) to the To/CC/BCC recipients, and
+* sends an admin alert email if any step fails.
 
-Emailing the validated report is added in later phases.
+Use ``--dry-run`` to exercise the whole flow without connecting to SMTP.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 import config
+from email_sender import send_alert_email, send_report_email
 from file_checker import (
     find_latest_pdf,
     is_pdf_file,
@@ -30,36 +32,60 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 
-def main() -> int:
-    """Run the Phase 2 pipeline (locate latest PDF).
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Validate the day's PDF report and email it via Gmail SMTP."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run the full pipeline but do not actually connect to SMTP.",
+    )
+    return parser.parse_args(argv)
+
+
+def _fail(reason: str, *, dry_run: bool) -> int:
+    """Log an error, send an admin alert, and return the failure exit code."""
+    logger.error("%s", reason)
+    send_alert_email(reason, dry_run=dry_run)
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the Phase 5 pipeline (validate + email).
 
     Returns:
-        Process exit code: ``0`` if a latest PDF was found, ``1`` if none was
-        found. Wired to ``sys.exit`` below so cron can detect failures.
+        Process exit code: ``0`` on a successful send, ``1`` on any failure.
     """
-    logger.info("=== Daily Report Sender starting (Phase 4) ===")
+    args = _parse_args(argv)
+    dry_run = args.dry_run
+
+    logger.info("=== Daily Report Sender starting (Phase 5%s) ===",
+                ", DRY-RUN" if dry_run else "")
     logger.info("Monitored report directory: %s", config.REPORT_DIR)
     logger.info("Log level: %s", config.LOG_LEVEL)
     logger.info("Log file: %s", config.LOG_FILE)
 
     latest_pdf = find_latest_pdf()
     if latest_pdf is None:
-        logger.error("No latest PDF available. Stopping for this run.")
-        return 1
+        return _fail("No latest PDF available in the report directory.", dry_run=dry_run)
 
     if not validate_report_filename(latest_pdf):
-        logger.error("Filename validation failed. Stopping for this run.")
-        return 1
+        return _fail(f"Filename validation failed for {latest_pdf.name}.", dry_run=dry_run)
 
     if not is_pdf_file(latest_pdf):
-        logger.error("PDF content validation failed. Stopping for this run.")
-        return 1
+        return _fail(f"PDF content validation failed for {latest_pdf.name}.", dry_run=dry_run)
 
     if not validate_modification_date(latest_pdf):
-        logger.error("Modification-date validation failed. Stopping for this run.")
-        return 1
+        return _fail(f"Modification-date validation failed for {latest_pdf.name}.", dry_run=dry_run)
 
-    logger.info("Selected report for further processing: %s", latest_pdf)
+    logger.info("Validated report ready to send: %s", latest_pdf)
+
+    if not send_report_email(latest_pdf, dry_run=dry_run):
+        return _fail(f"Sending the report email failed for {latest_pdf.name}.", dry_run=dry_run)
+
+    logger.info("=== Daily Report Sender finished successfully ===")
     return 0
 
 
