@@ -67,6 +67,11 @@ REPORT_DIR: Path = Path(
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE: Path = _resolve_path(os.getenv("LOG_FILE", "logs/sender.log"))
 
+# --- Dedup state (Phase 7) --------------------------------------------------
+# Records the date of the last successful send so a re-run on the same day
+# does not resend. Relative paths resolve from the project root.
+STATE_FILE: Path = _resolve_path(os.getenv("STATE_FILE", "state/last_sent.txt"))
+
 # --- SMTP / email settings (Phase 5) ---------------------------------------
 # Gmail SMTP defaults; overridable via .env. Port 587 uses STARTTLS.
 SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
