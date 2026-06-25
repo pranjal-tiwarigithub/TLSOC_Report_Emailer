@@ -61,11 +61,19 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     dry_run = args.dry_run
 
-    logger.info("=== Daily Report Sender starting (Phase 5%s) ===",
+    logger.info("=== Daily Report Sender starting (Phase 6%s) ===",
                 ", DRY-RUN" if dry_run else "")
     logger.info("Monitored report directory: %s", config.REPORT_DIR)
     logger.info("Log level: %s", config.LOG_LEVEL)
     logger.info("Log file: %s", config.LOG_FILE)
+
+    # Fail fast on missing/malformed configuration before doing any work.
+    problems = config.validate_config()
+    if problems:
+        for problem in problems:
+            logger.error("Config error: %s", problem)
+        logger.error("Invalid configuration. Stopping before any work is done.")
+        return 1
 
     latest_pdf = find_latest_pdf()
     if latest_pdf is None:
