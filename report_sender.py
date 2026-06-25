@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Daily Report Sender — application entry point.
 
-Phase 2 scope
+Phase 3 scope
 -------------
 The orchestrator now:
 
 * initialises logging,
-* logs a startup banner showing the effective configuration, and
-* locates the newest PDF in the configured report directory.
+* logs a startup banner showing the effective configuration,
+* locates the newest PDF in the configured report directory, and
+* validates that the filename contains today's date (YYYY-MM-DD).
 
-Validation (filename format, dates, PDF magic bytes) and emailing are added
-in later phases. Running this file is the primary way to smoke-test progress.
+Remaining file-content checks (PDF magic bytes, modification time) and
+emailing are added in later phases.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 import sys
 
 import config
-from file_checker import find_latest_pdf
+from file_checker import find_latest_pdf, validate_report_filename
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,7 +32,7 @@ def main() -> int:
         Process exit code: ``0`` if a latest PDF was found, ``1`` if none was
         found. Wired to ``sys.exit`` below so cron can detect failures.
     """
-    logger.info("=== Daily Report Sender starting (Phase 2) ===")
+    logger.info("=== Daily Report Sender starting (Phase 3) ===")
     logger.info("Monitored report directory: %s", config.REPORT_DIR)
     logger.info("Log level: %s", config.LOG_LEVEL)
     logger.info("Log file: %s", config.LOG_FILE)
@@ -39,6 +40,10 @@ def main() -> int:
     latest_pdf = find_latest_pdf()
     if latest_pdf is None:
         logger.error("No latest PDF available. Stopping for this run.")
+        return 1
+
+    if not validate_report_filename(latest_pdf):
+        logger.error("Filename validation failed. Stopping for this run.")
         return 1
 
     logger.info("Selected report for further processing: %s", latest_pdf)

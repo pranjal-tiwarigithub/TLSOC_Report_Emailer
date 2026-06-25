@@ -1,19 +1,23 @@
-"""Locating report files on disk.
+"""Locating and date-validating report files on disk.
 
-Phase 2 scope
--------------
-A single responsibility: find the newest PDF inside the configured report
-directory (``config.REPORT_DIR``).
+Phase 2 + 3 scope
+-----------------
+* Phase 2 — ``find_latest_pdf``: find the newest PDF (by modification time)
+  inside the configured report directory.
+* Phase 3 — ``validate_report_filename``: confirm the chosen file's name
+  contains today's (server local) date written as ``YYYY-MM-DD``. The rest of
+  the filename can be anything; only the date matters here.
 
-"Newest" is defined by **modification time (mtime)** — the most recently
-written file wins. This module does NOT yet check the filename format, the
-date, or the PDF magic bytes; those validations arrive in Phases 3 and 4.
+This module still does NOT check the PDF magic bytes or the file's
+modification time — those file-content checks arrive in Phase 4.
 
 The directory is taken from configuration and is never hardcoded here.
 """
 
 from __future__ import annotations
 
+import re
+from datetime import date
 from pathlib import Path
 
 import config
@@ -23,6 +27,11 @@ logger = get_logger(__name__)
 
 # Only files with this (case-insensitive) suffix are considered PDFs here.
 _PDF_SUFFIX = ".pdf"
+
+# Matches any ISO-style date token (YYYY-MM-DD) appearing anywhere in the
+# filename. The filename is otherwise unconstrained — only the presence of
+# today's date is required.
+_DATE_TOKEN_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def find_latest_pdf(report_dir: Path | None = None) -> Path | None:
@@ -69,3 +78,60 @@ def find_latest_pdf(report_dir: Path | None = None) -> Path | None:
         len(pdf_files),
     )
     return latest
+
+
+def _extract_valid_dates(filename: str) -> list[date]:
+    """Return every real calendar date written as YYYY-MM-DD in ``filename``.
+
+    Tokens that look like dates but are not valid calendar dates (e.g.
+    ``2026-13-40``) are skipped rather than raising.
+    """
+    found: list[date] = []
+    for token in _DATE_TOKEN_RE.findall(filename):
+        year, month, day = (int(part) for part in token.split("-"))
+        try:
+            found.append(date(year, month, day))
+        except ValueError:
+            # Not a real date (bad month/day); ignore this token.
+            logger.debug("Ignoring invalid date token '%s' in filename.", token)
+    return found
+
+
+def validate_report_filename(path: Path, today: date | None = None) -> bool:
+    """Check that ``path``'s filename contains today's date (YYYY-MM-DD).
+
+    The filename may be anything else; only the presence of today's date as an
+    ISO date token is required. The ``.pdf`` extension is already guaranteed by
+    :func:`find_latest_pdf`.
+
+    Args:
+        path: The candidate report file.
+        today: Date to compare against. Defaults to ``date.today()`` (server
+            local date); injectable so tests are not tied to the real clock.
+
+    Returns:
+        ``True`` if today's date appears in the filename, otherwise ``False``.
+    """
+    today = today or date.today()
+    filename = path.name
+
+    dates_in_name = _extract_valid_dates(filename)
+    if not dates_in_name:
+        logger.error(
+            "Filename has no valid YYYY-MM-DD date token: %s", filename
+        )
+        return False
+
+    if today not in dates_in_name:
+        logger.error(
+            "Filename date(s) %s do not match today's date %s: %s",
+            [d.isoformat() for d in dates_in_name],
+            today.isoformat(),
+            filename,
+        )
+        return False
+
+    logger.info(
+        "Filename date matches today (%s): %s", today.isoformat(), filename
+    )
+    return True
