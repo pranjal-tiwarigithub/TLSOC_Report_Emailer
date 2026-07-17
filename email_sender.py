@@ -193,7 +193,7 @@ def send_alert_email(reason: str, *, dry_run: bool = False) -> bool:
     try:
         _validate_email_config(config.ALERT_EMAIL_TO)
         message = _build_message(
-            subject="[ALERT] Daily Web Report failed",
+            subject="[ALERT] Daily Report Sender failed",
             body=body,
             to=config.ALERT_EMAIL_TO,
             cc=[],
