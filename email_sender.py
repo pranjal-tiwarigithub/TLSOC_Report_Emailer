@@ -1,10 +1,11 @@
 """Email delivery for the Daily Report Sender.
 
-Phase 5 scope
--------------
-Send the validated PDF report as a Gmail SMTP email with:
+Phase 5 + 11 scope
+------------------
+Send a validated PDF report as a Gmail SMTP email with:
 
-* the fixed subject and body from the spec,
+* a caller-supplied subject and body (Phase 11: parameterised so one function
+  serves every report type — only the inputs change, the transport is shared),
 * the PDF attached,
 * multiple recipients across To / CC / BCC, and
 * a ``dry_run`` mode that builds the full message and logs what *would* be
@@ -22,7 +23,6 @@ git-ignored ``.env``); they are never hardcoded or logged.
 from __future__ import annotations
 
 import smtplib
-from datetime import date
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -124,27 +124,41 @@ def _send(message: EmailMessage, recipients: list[str], *, dry_run: bool) -> Non
     logger.info("Email sent to %d recipient(s).", len(recipients))
 
 
-def send_report_email(pdf_path: Path, *, dry_run: bool = False) -> bool:
-    """Email the validated PDF report as an attachment.
+def send_report_email(
+    pdf_path: Path,
+    *,
+    subject: str,
+    body: str,
+    to: list[str],
+    cc: list[str],
+    bcc: list[str],
+    dry_run: bool = False,
+) -> bool:
+    """Email a validated PDF report as an attachment.
+
+    Subject, body, and recipients are supplied by the caller so this one
+    function serves every report type — only those inputs change per type; the
+    transport is shared.
 
     Args:
         pdf_path: Path to the validated PDF to attach.
+        subject: Fully-formed subject line for this report.
+        body: Fully-formed body text for this report.
+        to / cc / bcc: Recipient lists for this report type.
         dry_run: When True, build and log the message but do not connect to
             SMTP. Useful for testing without credentials.
 
     Returns:
         ``True`` on success (or successful dry-run), ``False`` on failure.
     """
-    recipients = _all_recipients(config.EMAIL_TO, config.EMAIL_CC, config.EMAIL_BCC)
-    # Append today's date to the subject, e.g. "ASC Web Monitoring Report - 2026-06-25".
-    subject = f"{config.EMAIL_SUBJECT} - {date.today().isoformat()}"
+    recipients = _all_recipients(to, cc, bcc)
     try:
         _validate_email_config(recipients)
         message = _build_message(
             subject=subject,
-            body=config.EMAIL_BODY,
-            to=config.EMAIL_TO,
-            cc=config.EMAIL_CC,
+            body=body,
+            to=to,
+            cc=cc,
             attachment=pdf_path,
         )
         _send(message, recipients, dry_run=dry_run)
