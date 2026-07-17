@@ -1,16 +1,20 @@
 """Send-deduplication state for the Daily Report Sender.
 
-Phase 7 scope
--------------
+Phase 7 + 12 scope
+------------------
 A tiny persistent marker that records the date of the last successful send,
 so that a second run on the same day (a manual re-run, or cron firing twice)
 does not deliver the report again.
 
-The state is a single ISO date (``YYYY-MM-DD``) written to
-``config.STATE_FILE``. Reads and writes are defensive: a missing, empty, or
-corrupt file is treated as "nothing sent yet" rather than an error, and a
-write failure is logged but never crashes the caller (the email has already
-gone out by the time we record it).
+Phase 12: the marker is now **per report type** — each type gets its own file
+``last_sent_<type>.txt`` next to ``config.STATE_FILE``. This keeps the types
+independent: web being sent must not mark proxy as sent, and a report that
+arrives later in the day is still delivered even after another type already went.
+
+Each marker holds a single ISO date (``YYYY-MM-DD``). Reads and writes are
+defensive: a missing, empty, or corrupt file is treated as "nothing sent yet"
+rather than an error, and a write failure is logged but never crashes the caller
+(the email has already gone out by the time we record it).
 """
 
 from __future__ import annotations
@@ -22,6 +26,16 @@ import config
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _state_path(report_type: str, state_file: Path | None = None) -> Path:
+    """Return the per-type marker path, e.g. ``state/last_sent_web.txt``.
+
+    Derived from ``config.STATE_FILE`` (or ``state_file`` override): the marker
+    lives in the same directory, named ``last_sent_<type>.txt``.
+    """
+    base = state_file or config.STATE_FILE
+    return base.parent / f"last_sent_{report_type.lower()}.txt"
 
 
 def _read_last_sent_date(state_file: Path) -> date | None:
@@ -47,44 +61,54 @@ def _read_last_sent_date(state_file: Path) -> date | None:
 
 
 def already_sent_today(
-    today: date | None = None, state_file: Path | None = None
+    report_type: str,
+    today: date | None = None,
+    state_file: Path | None = None,
 ) -> bool:
-    """Return True if a successful send was already recorded for today.
+    """Return True if ``report_type`` was already sent successfully today.
 
     Args:
+        report_type: The report type whose marker to check (e.g. "web").
         today: Date to check. Defaults to ``date.today()`` (injectable for tests).
-        state_file: Override the state-file path (defaults to ``config.STATE_FILE``).
+        state_file: Override the base state-file path (defaults to
+            ``config.STATE_FILE``); the per-type marker is derived from it.
     """
     today = today or date.today()
-    state_file = state_file or config.STATE_FILE
+    marker = _state_path(report_type, state_file)
 
-    last_sent = _read_last_sent_date(state_file)
+    last_sent = _read_last_sent_date(marker)
     if last_sent == today:
         logger.info(
-            "Report already sent today (%s) — recorded in %s.",
+            "'%s' report already sent today (%s) — recorded in %s.",
+            report_type,
             today.isoformat(),
-            state_file,
+            marker,
         )
         return True
     return False
 
 
 def mark_sent_today(
-    today: date | None = None, state_file: Path | None = None
+    report_type: str,
+    today: date | None = None,
+    state_file: Path | None = None,
 ) -> None:
-    """Record that the report was successfully sent today.
+    """Record that ``report_type`` was successfully sent today.
 
     A failure to write the marker is logged but not raised: the email has
     already been delivered, so the run still succeeded.
     """
     today = today or date.today()
-    state_file = state_file or config.STATE_FILE
+    marker = _state_path(report_type, state_file)
 
     try:
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(today.isoformat() + "\n", encoding="utf-8")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(today.isoformat() + "\n", encoding="utf-8")
         logger.info(
-            "Recorded successful send for %s in %s.", today.isoformat(), state_file
+            "Recorded successful send of '%s' for %s in %s.",
+            report_type,
+            today.isoformat(),
+            marker,
         )
     except OSError as exc:
-        logger.error("Could not update state file %s: %s", state_file, exc)
+        logger.error("Could not update state file %s: %s", marker, exc)
