@@ -1,7 +1,9 @@
 # Daily Report Sender
 
-Automatically email the day's **ASC Web Monitoring Report** (a PDF file) to a
-list of people, once every day. It is built to run unattended on a schedule
+Automatically email **each of the day's monitoring report PDFs** (web, email,
+proxy, or any type you configure) to its **own list of people**, once every day.
+Every report type gets a **separate email** whose subject and body name that
+report type and your department. It is built to run unattended on a schedule
 (via cron), but you can also run it by hand at any time.
 
 If you are new to this project, read the sections in order. Every step has
@@ -29,31 +31,30 @@ copy-paste commands.
 
 Once a day the tool:
 
-1. Looks inside a folder you choose for the **newest PDF**.
-2. Checks that the PDF is really today's report:
+1. Looks inside a folder you choose for **every PDF that was created today**.
+2. Works out each file's **report type** from its name
+   (`daily_<type>_report_<YYYY-MM-DD>.pdf` → e.g. `web`, `email`, `proxy`).
+3. Checks that each PDF is really today's report:
    - the **filename contains today's date** (written as `YYYY-MM-DD`),
    - the file is a **genuine PDF** (not a renamed text file),
    - the file was **modified today** (not a leftover from a previous day).
-3. If everything checks out, it **emails the PDF** as an attachment to your
-   **To / CC / BCC** recipients using Gmail.
-4. It **remembers** that it sent today, so it will not send a duplicate if it
-   runs again the same day.
-5. If anything goes wrong, it **writes an error to the log** and sends an
-   **alert email** to an admin address, so a failure is never silent.
+4. For each valid report it sends a **separate email** to **that type's own
+   recipients** (To / CC / BCC), using Gmail, with the PDF attached.
+5. It **remembers per type** that it sent today, so it will not send a duplicate
+   if it runs again the same day (but a report that arrives later in the day is
+   still delivered).
+6. Any PDF whose type is **not configured** is skipped; anything that fails is
+   logged, and a **single alert email** to an admin address summarises every
+   skipped/failed report — so a problem is never silent.
 
-**The email looks like this:**
+**Each email looks like this** (example for the proxy report):
 
-- **Subject:** `ASC Web Monitoring Report - 2026-06-25` (today's date is added
-  automatically)
-- **Body:**
-  ```
-  Hello Team,
-
-  This is your ASC Web Monitoring Report for today.
-  For any further details, kindly contact the TLSOC team.
-  Regards,
-  Team TLSOC
-  ```
+- **Subject:** `TLSOC Daily Proxy Report - 2026-07-17` — where `TLSOC` is your
+  configured `DEPARTMENT`, `Proxy` is the report type, and today's date is added
+  automatically.
+- **Body:** addressed to the team, naming the department and report type, e.g.
+  "the TLSOC Proxy Monitoring Report for today … the current status of the
+  monitored proxy assets …".
 - **Attachment:** the validated PDF.
 
 ---
@@ -65,25 +66,26 @@ START
   │
   ├─ Load settings from .env, check they are valid ──► invalid? log + STOP (exit 1)
   │
-  ├─ Already sent today? ──► yes ► log "nothing to do" + STOP (exit 0)
+  ├─ Find ALL PDFs modified today in REPORT_DIR ──► none? log "nothing to do" + STOP (exit 0)
   │
-  ├─ Find the newest PDF in REPORT_DIR ──► none? alert + STOP (exit 1)
+  └─ For EACH of today's PDFs:
+        ├─ Work out its type from the filename
+        ├─ Type not configured?      ──► skip + add to alert summary
+        ├─ Filename/PDF/mtime valid? ──► no? add to alert summary (this run will exit 1)
+        ├─ Already sent this type today? (unless --force) ──► yes? skip
+        └─ Send the email for this type (PDF attached) ──► failed? add to alert summary
+                                                        └─ ok? record "sent today" for this type
   │
-  ├─ Filename contains today's date? ──► no? alert + STOP (exit 1)
-  ├─ File is a real PDF (%PDF- header)? ──► no? alert + STOP (exit 1)
-  ├─ File modified today? ──► no? alert + STOP (exit 1)
-  │
-  ├─ Send the email (PDF attached) ──► failed? alert + STOP (exit 1)
-  │
-  └─ Record "sent today" + STOP (exit 0)  ✅
+  ├─ If anything was skipped/failed ► send ONE admin alert summarising it
+  └─ STOP: exit 1 if any report failed to validate/send, else exit 0  ✅
 ```
 
 **Exit codes** (useful for cron and scripts):
 
 | Code | Meaning |
 |------|---------|
-| `0`  | Success — sent, or already sent earlier today (nothing to do) |
-| `1`  | Failure — bad config, no valid report, send error, or crash |
+| `0`  | Success — all found reports sent (or already sent / nothing to do). Unconfigured files alone still exit `0` (they are only reported). |
+| `1`  | Failure — bad config, or a report failed to validate/send, or a crash |
 
 ---
 
@@ -93,16 +95,16 @@ START
 Daily_Report_Sender/
 ├── report_sender.py     # Main program you run (the entry point)
 ├── config.py            # All settings + secrets, loaded from .env
-├── file_checker.py      # Finds the newest PDF and validates it
-├── email_sender.py      # Builds and sends the email via Gmail
-├── state_store.py       # Remembers if today's report was already sent
+├── file_checker.py      # Finds today's PDFs, reads each one's report type, validates
+├── email_sender.py      # Builds and sends each email via Gmail
+├── state_store.py       # Remembers, per report type, if it was already sent today
 ├── logger.py            # Logging to file + screen
 ├── requirements.txt     # Python packages needed
 ├── .env.example         # Template — copy this to .env and fill it in
 ├── .env                 # YOUR real settings + secrets (never shared/committed)
 ├── .gitignore
 ├── logs/                # sender.log lives here
-├── state/               # last_sent.txt (the "already sent today" marker)
+├── state/               # last_sent_<type>.txt (the per-type "already sent" markers)
 └── README.md            # This file
 ```
 
@@ -161,30 +163,39 @@ Now open `.env` in an editor and fill in your real values (next section).
 All settings live in the `.env` file. It is **git-ignored**, so your password
 is never committed or shared. Edit it with any text editor (e.g. `nano .env`).
 
-| Variable         | What it is                                            | Example                                       |
-|------------------|-------------------------------------------------------|-----------------------------------------------|
-| `REPORT_DIR`     | Folder to watch for the PDF (**this is the key one**) | `/opt/TLSOCDockerDeploy/reporting/output/pdf` |
-| `LOG_LEVEL`      | How much detail to log: `DEBUG`/`INFO`/`WARNING`/`ERROR` | `INFO`                                     |
-| `LOG_FILE`       | Where to write logs (relative = inside project)       | `logs/sender.log`                             |
-| `STATE_FILE`     | Where the "already sent today" marker is stored       | `state/last_sent.txt`                         |
-| `SMTP_HOST`      | Mail server                                           | `smtp.gmail.com`                              |
-| `SMTP_PORT`      | Mail server port                                      | `587`                                         |
-| `SMTP_USER`      | **Secret** — your Gmail address                       | `you@gmail.com`                               |
-| `SMTP_PASSWORD`  | **Secret** — your Gmail **App Password**              | `abcd efgh ijkl mnop`                         |
-| `EMAIL_FROM`     | "From" address (leave blank to reuse `SMTP_USER`)     | `you@gmail.com`                               |
-| `EMAIL_TO`       | Recipients, separated by commas                       | `alice@x.com,bob@y.com`                       |
-| `EMAIL_CC`       | CC recipients (optional)                              | `boss@x.com`                                  |
-| `EMAIL_BCC`      | BCC recipients (optional, hidden from others)         | `audit@x.com`                                 |
-| `ALERT_EMAIL_TO` | Who gets an email if a run **fails**                  | `admin@x.com`                                 |
-| `EMAIL_SUBJECT`  | Subject text (today's date is added automatically)    | `ASC Web Monitoring Report`                   |
+| Variable            | What it is                                               | Example                                       |
+|---------------------|---------------------------------------------------------|-----------------------------------------------|
+| `REPORT_DIR`        | Folder to watch for the PDFs (**this is the key one**)  | `/opt/TLSOCDockerDeploy/reporting/output/pdf` |
+| `LOG_LEVEL`         | How much detail to log: `DEBUG`/`INFO`/`WARNING`/`ERROR`| `INFO`                                        |
+| `LOG_FILE`          | Where to write logs (relative = inside project)         | `logs/sender.log`                             |
+| `STATE_FILE`        | Base path for the per-type "already sent" markers       | `state/last_sent.txt`                         |
+| `SMTP_HOST`         | Mail server                                             | `smtp.gmail.com`                              |
+| `SMTP_PORT`         | Mail server port                                        | `587`                                         |
+| `SMTP_USER`         | **Secret** — your Gmail address                         | `you@gmail.com`                               |
+| `SMTP_PASSWORD`     | **Secret** — your Gmail **App Password**                | `abcd efgh ijkl mnop`                         |
+| `EMAIL_FROM`        | "From" address (leave blank to reuse `SMTP_USER`)       | `you@gmail.com`                               |
+| `ALERT_EMAIL_TO`    | Who gets the alert if a run has skips/failures          | `admin@x.com`                                 |
+| `DEPARTMENT`        | Name shown in every subject/body                        | `TLSOC`                                       |
+| `REPORT_TYPES`      | Which report types to send (comma-separated)            | `web,email,proxy`                             |
+| `EMAIL_TO_<TYPE>`   | **To** recipients for one type (`<TYPE>` uppercased)    | `EMAIL_TO_WEB=web-team@x.com`                 |
+| `EMAIL_CC_<TYPE>`   | **CC** recipients for that type (optional)              | `EMAIL_CC_WEB=boss@x.com`                     |
+| `EMAIL_BCC_<TYPE>`  | **BCC** recipients for that type (optional, hidden)     | `EMAIL_BCC_WEB=audit@x.com`                   |
 
-**Notes:**
+**How report types and recipients fit together:**
+- Each type in `REPORT_TYPES` maps to a file named
+  `daily_<type>_report_<YYYY-MM-DD>.pdf` in `REPORT_DIR`, and to its own
+  `EMAIL_TO_<TYPE>` / `EMAIL_CC_<TYPE>` / `EMAIL_BCC_<TYPE>` recipients.
+  For example, `proxy` uses the file `daily_proxy_report_<today>.pdf` and the
+  `EMAIL_*_PROXY` recipients.
+- **To add a new report type**, add it to `REPORT_TYPES` and add its
+  `EMAIL_TO_<TYPE>` line (e.g. `dns` → `REPORT_TYPES=web,email,proxy,dns` plus
+  `EMAIL_TO_DNS=...`). No code changes needed.
+- Every declared type must have at least one recipient, or the config is
+  rejected at startup.
 - For **multiple recipients**, separate them with commas:
-  `EMAIL_TO=alice@x.com,bob@y.com,carol@z.com`
-- `EMAIL_CC` and `EMAIL_BCC` can be left empty.
-- The accepted PDF filename only needs to **contain today's date**, e.g.
-  `web_report_2026-06-25.pdf`, `report_2026-06-25_final.pdf`, or even
-  `2026-06-25.pdf`.
+  `EMAIL_TO_WEB=alice@x.com,bob@y.com`. CC/BCC may be left empty.
+- A PDF whose type is **not** in `REPORT_TYPES` is skipped and named in the
+  admin alert.
 
 ---
 
@@ -237,37 +248,40 @@ missing password or recipients), fix them in `.env` and run again.
 
 ### Test 1 — Dry run (no email sent)
 
-Create a sample PDF for today and point the tool at it:
+Create a sample PDF **per report type** for today and point the tool at them:
 
 ```bash
-# Make a temporary test folder + a valid sample PDF named with today's date
+# Make a temporary test folder + one valid PDF per configured type (today's date)
 mkdir -p /tmp/report_test
-printf '%%PDF-1.7\nSample report body.\n%%%%EOF\n' > /tmp/report_test/web_report_$(date +%F).pdf
+for t in web email proxy; do
+  printf '%%PDF-1.7\nSample %s report.\n%%%%EOF\n' "$t" \
+    > /tmp/report_test/daily_${t}_report_$(date +%F).pdf
+done
 
 # Dry run against that folder
 REPORT_DIR=/tmp/report_test python report_sender.py --dry-run
 ```
 **Expected (in the log):**
-- `Latest PDF found: .../web_report_<today>.pdf`
-- `Filename date matches today`
-- `Confirmed PDF signature`
-- `File modification date matches today`
-- `[DRY-RUN] Would send 'ASC Web Monitoring Report - <today>' ... to N recipient(s)`
-- `finished successfully`
+- `Found 3 PDF file(s) modified today (<today>)`
+- for each type: `Filename date matches today`, `Confirmed PDF signature`,
+  `File modification date matches today`
+- `[DRY-RUN] Would send '<DEPARTMENT> Daily Web Report - <today>' ... to N recipient(s)`
+  (and the same for Email and Proxy, each to its own recipients)
+- `Run summary: 3 sent, 0 skipped ...` → `Daily Report Sender finished`
 
-No email is sent. This proves the whole pipeline and your recipient list are
-correct.
+No email is sent. This proves the whole pipeline and your per-type recipient
+lists are correct.
 
-### Test 2 — Real send (a real email goes out)
+### Test 2 — Real send (real emails go out)
 
 ```bash
-rm -f state/last_sent.txt        # clear today's marker so it will actually send
+rm -f state/last_sent_*.txt      # clear today's markers so it will actually send
 REPORT_DIR=/tmp/report_test python report_sender.py
 echo "exit: $?"
 ```
-**Expected:** ends with `Email sent to N recipient(s).` and
-`finished successfully`, exit `0`. Check the recipients' inboxes (and spam) for
-the email with the PDF attached.
+**Expected:** one `Email sent to N recipient(s).` per report type and exit `0`.
+Check each type's recipients' inboxes (and spam) for the email with the PDF
+attached.
 
 ### Test 3 — Duplicate protection (it should NOT send twice)
 
@@ -277,36 +291,50 @@ Right after Test 2 succeeded, run it again **without** `--force`:
 REPORT_DIR=/tmp/report_test python report_sender.py
 echo "exit: $?"
 ```
-**Expected:** `Report already sent today ...` → `Nothing to do — today's report
-was already sent.`, exit `0`, **no email**. This is the safety net that
-prevents duplicate emails.
+**Expected:** `'web' report already sent today ...` (and email, proxy) →
+`Run summary: 0 sent, 3 skipped ...`, exit `0`, **no email**. This is the safety
+net that prevents duplicate emails, tracked per type.
 
 ### Test 4 — Force a resend
 
 ```bash
 REPORT_DIR=/tmp/report_test python report_sender.py --force
 ```
-**Expected:** it sends again (a second email arrives). Use this when you
+**Expected:** it sends again (a fresh email per type arrives). Use this when you
 deliberately want to re-send.
 
-### Test 5 — A bad/old file is rejected
+### Test 5 — Unknown / bad files
 
 ```bash
-# A file with YESTERDAY's date in the name should be refused
-touch /tmp/report_test/web_report_$(date -d yesterday +%F).pdf
-rm -f /tmp/report_test/web_report_$(date +%F).pdf
-rm -f state/last_sent.txt
+# An unconfigured type: skipped and reported in the admin alert (still exit 0)
+printf '%%PDF-1.7\n%%%%EOF\n' > /tmp/report_test/daily_dns_report_$(date +%F).pdf
+# A configured type that is NOT a real PDF: validation fails (exit 1)
+printf 'not a pdf\n' > /tmp/report_test/daily_web_report_$(date +%F).pdf
+rm -f state/last_sent_*.txt
 REPORT_DIR=/tmp/report_test python report_sender.py
 echo "exit: $?"
 ```
-**Expected:** validation fails (date does not match today), an **alert email**
-is sent to `ALERT_EMAIL_TO`, exit `1`.
+**Expected:** the `dns` file is skipped ("unrecognized/unconfigured"), the
+invalid `web` file fails content validation, a **single alert email** to
+`ALERT_EMAIL_TO` summarises both, and the exit code is `1` (because a configured
+report failed to validate).
+
+### Test 6 (developers) — automated unit tests
+
+If you have the dev tools installed (`pip install -r requirements-dev.txt`),
+run the full test suite:
+
+```bash
+python -m pytest
+```
+**Expected:** all tests pass. These use temporary folders and a fake SMTP, so
+**no real email is ever sent** and your real `REPORT_DIR` is never touched.
 
 ### Clean up after testing
 
 ```bash
 rm -rf /tmp/report_test
-rm -f state/last_sent.txt        # optional: allow a fresh real send today
+rm -f state/last_sent_*.txt       # optional: allow a fresh real send today
 ```
 
 ### Bonus — Watch a folder live (for interactive testing)
@@ -316,21 +344,22 @@ Run the tool in a loop so it sends as soon as you drop a valid PDF in:
 ```bash
 source .venv/bin/activate
 mkdir -p /home/pranjaltiwari/Documents/testing
-rm -f state/last_sent.txt
+rm -f state/last_sent_*.txt
 
 while true; do
   REPORT_DIR=/home/pranjaltiwari/Documents/testing python report_sender.py
   sleep 15
 done
 ```
-In another terminal, drop a sample PDF:
+In another terminal, drop a sample PDF (named for a configured type):
 ```bash
 printf '%%PDF-1.7\nLive test.\n%%%%EOF\n' \
-  > /home/pranjaltiwari/Documents/testing/web_report_$(date +%F).pdf
+  > /home/pranjaltiwari/Documents/testing/daily_web_report_$(date +%F).pdf
 ```
-It sends once within ~15 seconds, then skips. Press **Ctrl+C** to stop.
-> Tip: put the PDF in **before** starting the loop, otherwise every empty cycle
-> sends a failure alert email.
+It sends that type once within ~15 seconds, then skips it. Press **Ctrl+C** to
+stop.
+> Tip: an empty folder just logs "nothing to do" (no alert). An **unconfigured**
+> file, however, triggers an alert every cycle — remove it or add its type.
 
 ---
 
@@ -352,42 +381,43 @@ grep ERROR logs/sender.log       # only errors
 
 Each line is: `timestamp | LEVEL | module | message`.
 
-**A successful send** (the happy path — found, validated, emailed, recorded):
+**A successful run** (multiple types found, validated, emailed, recorded):
 ```
-2026-06-25 13:58:30 | INFO     | __main__     | === Daily Report Sender starting (Phase 7) ===
-2026-06-25 13:58:30 | INFO     | __main__     | Monitored report directory: /home/pranjaltiwari/Documents/testing
-2026-06-25 13:58:30 | INFO     | __main__     | Log level: INFO
-2026-06-25 13:58:30 | INFO     | __main__     | Log file: /home/pranjaltiwari/Desktop/Daily_Report_Sender/logs/sender.log
-2026-06-25 13:58:30 | INFO     | file_checker | Latest PDF found: /home/pranjaltiwari/Documents/testing/web_report_2026-06-25.pdf (out of 1 PDF file(s))
-2026-06-25 13:58:30 | INFO     | file_checker | Filename date matches today (2026-06-25): web_report_2026-06-25.pdf
-2026-06-25 13:58:30 | INFO     | file_checker | Confirmed PDF signature: /home/pranjaltiwari/Documents/testing/web_report_2026-06-25.pdf
-2026-06-25 13:58:30 | INFO     | file_checker | File modification date matches today (2026-06-25): /home/pranjaltiwari/Documents/testing/web_report_2026-06-25.pdf
-2026-06-25 13:58:30 | INFO     | __main__     | Validated report ready to send: /home/pranjaltiwari/Documents/testing/web_report_2026-06-25.pdf
-2026-06-25 13:58:30 | INFO     | email_sender | Connecting to SMTP smtp.gmail.com:587 (STARTTLS) as you@gmail.com
-2026-06-25 13:58:34 | INFO     | email_sender | Email sent to 2 recipient(s).
-2026-06-25 13:58:34 | INFO     | state_store  | Recorded successful send for 2026-06-25 in /home/pranjaltiwari/Desktop/Daily_Report_Sender/state/last_sent.txt.
-2026-06-25 13:58:34 | INFO     | __main__     | === Daily Report Sender finished successfully ===
-```
-
-**An already-sent run** (duplicate protection — stops early, no email):
-```
-2026-06-25 14:01:24 | INFO     | __main__     | === Daily Report Sender starting (Phase 7) ===
-2026-06-25 14:01:24 | INFO     | __main__     | Monitored report directory: /home/pranjaltiwari/Documents/testing
-2026-06-25 14:01:24 | INFO     | state_store  | Report already sent today (2026-06-25) — recorded in .../state/last_sent.txt.
-2026-06-25 14:01:24 | INFO     | __main__     | Nothing to do — today's report was already sent.
+2026-07-17 13:58:30 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
+2026-07-17 13:58:30 | INFO     | __main__     | Department: TLSOC
+2026-07-17 13:58:30 | INFO     | __main__     | Report types: web, email, proxy
+2026-07-17 13:58:30 | INFO     | __main__     | Monitored report directory: /opt/TLSOCDockerDeploy/reporting/output/pdf
+2026-07-17 13:58:30 | INFO     | file_checker | Found 2 PDF file(s) modified today (2026-07-17) in /opt/TLSOCDockerDeploy/reporting/output/pdf
+2026-07-17 13:58:30 | INFO     | file_checker | Confirmed PDF signature: .../daily_proxy_report_2026-07-17.pdf
+2026-07-17 13:58:34 | INFO     | email_sender | Email sent to 1 recipient(s).
+2026-07-17 13:58:34 | INFO     | state_store  | Recorded successful send of 'proxy' for 2026-07-17 in .../state/last_sent_proxy.txt.
+2026-07-17 13:58:34 | INFO     | __main__     | Sent 'proxy' report: daily_proxy_report_2026-07-17.pdf
+2026-07-17 13:58:38 | INFO     | email_sender | Email sent to 2 recipient(s).
+2026-07-17 13:58:38 | INFO     | __main__     | Sent 'web' report: daily_web_report_2026-07-17.pdf
+2026-07-17 13:58:38 | INFO     | __main__     | Run summary: 2 sent, 0 skipped (already sent), 0 problem(s).
+2026-07-17 13:58:38 | INFO     | __main__     | === Daily Report Sender finished ===
 ```
 
-**A failed run** (no valid report — logs the error and sends an admin alert):
+**An already-sent run** (per-type duplicate protection — no email):
 ```
-2026-06-25 09:15:02 | INFO     | __main__     | === Daily Report Sender starting (Phase 7) ===
-2026-06-25 09:15:02 | INFO     | __main__     | Monitored report directory: /opt/TLSOCDockerDeploy/reporting/output/pdf
-2026-06-25 09:15:02 | WARNING  | file_checker | No PDF files found in report directory: /opt/TLSOCDockerDeploy/reporting/output/pdf
-2026-06-25 09:15:02 | ERROR    | __main__     | No latest PDF available in the report directory.
-2026-06-25 09:15:06 | INFO     | email_sender | Email sent to 1 recipient(s).
+2026-07-17 14:01:24 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
+2026-07-17 14:01:24 | INFO     | file_checker | Found 2 PDF file(s) modified today (2026-07-17) in ...
+2026-07-17 14:01:24 | INFO     | state_store  | 'proxy' report already sent today (2026-07-17) — recorded in .../state/last_sent_proxy.txt.
+2026-07-17 14:01:24 | INFO     | __main__     | Skipping 'proxy' — already sent today (daily_proxy_report_2026-07-17.pdf).
+2026-07-17 14:01:24 | INFO     | __main__     | Run summary: 0 sent, 2 skipped (already sent), 0 problem(s).
 ```
 
-> In the failed example the last "Email sent" line is the **alert** going to
-> `ALERT_EMAIL_TO`, not the report itself.
+**A run with problems** (unknown type + a bad PDF — one consolidated alert):
+```
+2026-07-17 09:15:02 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
+2026-07-17 09:15:02 | WARNING  | __main__     | Skipped unrecognized/unconfigured report daily_dns_report_2026-07-17.pdf (type 'dns' not in REPORT_TYPES).
+2026-07-17 09:15:02 | ERROR    | __main__     | PDF content validation failed for daily_web_report_2026-07-17.pdf.
+2026-07-17 09:15:02 | INFO     | __main__     | Run summary: 0 sent, 0 skipped (already sent), 2 problem(s).
+2026-07-17 09:15:06 | INFO     | email_sender | Email sent to 1 recipient(s).
+```
+
+> In the last example the final "Email sent" line is the single **alert** going
+> to `ALERT_EMAIL_TO`, summarising both problems — not a report.
 
 ---
 
@@ -396,12 +426,14 @@ Each line is: `timestamp | LEVEL | module | message`.
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | `Problems: ... SMTP_PASSWORD is not set` | Fill `SMTP_PASSWORD` in `.env` with your **App Password** (not your normal password). |
+| `Problems: Report type 'X' has no recipients` | Add `EMAIL_TO_X=...` (uppercased) in `.env`, or remove `X` from `REPORT_TYPES`. |
 | `Username and Password not accepted` | You used your normal Gmail password. Create an **App Password** and use that. |
-| `No latest PDF available` | `REPORT_DIR` is wrong/empty, or no `.pdf` file is in it. |
+| `Nothing to do — no report PDFs modified today` | `REPORT_DIR` is wrong/empty, or no PDF in it was modified today. |
+| `Skipped unrecognized/unconfigured report ...` | The file's type isn't in `REPORT_TYPES`, or its name isn't `daily_<type>_report_<date>.pdf`. Add the type, or fix the name. |
 | `Filename date(s) ... do not match today` | The PDF name does not contain today's date (`YYYY-MM-DD`). |
 | `File is not a valid PDF` | The file is not a real PDF (e.g. a renamed text file). |
 | `File modification date ... is not today` | The file is old. Re-create it today, or run `touch yourfile.pdf`. |
-| It says "already sent today" but I want to resend | Use `--force`, or `rm -f state/last_sent.txt`. |
+| It says a type is "already sent today" but I want to resend | Use `--force`, or `rm -f state/last_sent_<type>.txt`. |
 | Nothing happens when cron should run | See the cron section below (paths, timezone). |
 
 ---
@@ -476,7 +508,7 @@ path problems before the real schedule:
 
 ```bash
 cd $APP_DIR
-rm -f state/last_sent.txt      # so it isn't skipped by today's marker
+rm -f state/last_sent_*.txt    # so it isn't skipped by today's markers
 env -i /bin/bash -c "cd $APP_DIR && $APP_DIR/.venv/bin/python report_sender.py >> $APP_DIR/logs/cron.log 2>&1"
 echo "exit: $?"
 tail -n 30 logs/cron.log
