@@ -10,7 +10,11 @@ Settings groups
 * Paths    — ``REPORT_DIR`` (monitored directory, configurable).
 * Logging  — ``LOG_LEVEL``, ``LOG_FILE``.
 * SMTP     — host/port and the ``SMTP_USER`` / ``SMTP_PASSWORD`` secrets.
-* Email    — sender, To/CC/BCC recipients, admin alert address, subject/body.
+* Email    — sender and admin alert address.
+* Reports  — ``DEPARTMENT`` (branding), ``REPORT_TYPES`` and the per-type
+             recipient config (``EMAIL_TO_<TYPE>`` etc.) exposed as
+             ``REPORT_CONFIGS``; plus the ``subject_for`` / ``body_for`` helpers
+             that weave the report type into each email.
 
 Call :func:`validate_config` at startup to fail fast (with clear messages)
 when a required value is missing or malformed, rather than crashing mid-run.
@@ -19,6 +23,8 @@ when a required value is missing or malformed, rather than crashing mid-run.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -84,32 +90,97 @@ SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")  # Gmail App Password
 # Sender address. Defaults to the SMTP username when not set separately.
 EMAIL_FROM: str = os.getenv("EMAIL_FROM", "") or SMTP_USER
 
-# Recipients — comma-separated lists in .env (To / CC / BCC).
-EMAIL_TO: list[str] = _split_csv(os.getenv("EMAIL_TO", ""))
-EMAIL_CC: list[str] = _split_csv(os.getenv("EMAIL_CC", ""))
-EMAIL_BCC: list[str] = _split_csv(os.getenv("EMAIL_BCC", ""))
-
 # Admin address(es) that receive failure alerts (Phase 5 decision).
 ALERT_EMAIL_TO: list[str] = _split_csv(os.getenv("ALERT_EMAIL_TO", ""))
 
-# Subject base (today's date is appended at send time) and body.
-EMAIL_SUBJECT: str = os.getenv("EMAIL_SUBJECT", "ASC Web Monitoring Report")
-EMAIL_BODY: str = (
-    "Hello Team,\n\n"
-    "This is your ASC Web Monitoring Report for today.\n"
-    "For any further details, kindly contact the TLSOC team.\n"
-    "Regards,\n"
-    "Team TLSOC\n"
-)
+# --- Department name (Phase 9) ---------------------------------------------
+# Shown in every email subject/body. Configurable so each deployment can brand
+# its reports (e.g. "ASC", "SOC", a team name).
+DEPARTMENT: str = os.getenv("DEPARTMENT", "TLSOC").strip()
+
+# --- Report types and per-type recipients (Phase 9) ------------------------
+# The folder now holds multiple report PDFs per day, one per source (web,
+# email, proxy, …). REPORT_TYPES declares which types this deployment sends;
+# each type has its own recipient lists read from EMAIL_TO_<TYPE> etc.
+REPORT_TYPES: list[str] = _split_csv(os.getenv("REPORT_TYPES", "web,email,proxy"))
+
+
+@dataclass(frozen=True)
+class ReportType:
+    """Configuration for one report type (e.g. web / email / proxy)."""
+
+    name: str              # lowercase type token, e.g. "web"
+    display_name: str      # human-facing, e.g. "Web"
+    to: list[str]
+    cc: list[str]
+    bcc: list[str]
+
+    def has_recipients(self) -> bool:
+        """True if at least one To/CC/BCC address is configured."""
+        return bool(self.to or self.cc or self.bcc)
+
+
+def _load_report_config(name: str) -> ReportType:
+    """Build a :class:`ReportType` for ``name`` from its EMAIL_*_<TYPE> vars."""
+    suffix = name.upper()
+    return ReportType(
+        name=name,
+        display_name=name.capitalize(),
+        to=_split_csv(os.getenv(f"EMAIL_TO_{suffix}", "")),
+        cc=_split_csv(os.getenv(f"EMAIL_CC_{suffix}", "")),
+        bcc=_split_csv(os.getenv(f"EMAIL_BCC_{suffix}", "")),
+    )
+
+
+# Map of declared type name -> its resolved configuration.
+REPORT_CONFIGS: dict[str, ReportType] = {
+    name: _load_report_config(name) for name in REPORT_TYPES
+}
+
+
+def subject_for(report_type: str, today: date | None = None) -> str:
+    """Return the email subject for ``report_type`` on ``today``.
+
+    Format: ``"<DEPARTMENT> Daily <Type> Report - <YYYY-MM-DD>"``.
+    """
+    today = today or date.today()
+    display = REPORT_CONFIGS[report_type].display_name if report_type in REPORT_CONFIGS \
+        else report_type.capitalize()
+    return f"{DEPARTMENT} Daily {display} Report - {today.isoformat()}"
+
+
+def body_for(report_type: str) -> str:
+    """Return the email body for ``report_type``.
+
+    The report type is woven into the text so the wording matches whatever is
+    being sent (e.g. "Proxy Monitoring Report" / "monitored proxy assets"),
+    rather than the previously hardcoded "web".
+    """
+    display = REPORT_CONFIGS[report_type].display_name if report_type in REPORT_CONFIGS \
+        else report_type.capitalize()
+    name = report_type.lower()
+    return (
+        "Hello Team,\n\n"
+        f"Please find attached the {DEPARTMENT} {display} Monitoring Report for today. "
+        "This report provides a summary of the monitoring activities, "
+        "key observations of past 24 hours, "
+        f"and the current status of the monitored {name} assets.\n\n"
+        "Kindly review the attached report for the latest updates. "
+        "If you have any questions or require additional information, "
+        f"please feel free to contact the {DEPARTMENT} team.\n\n"
+        "Regards,\n"
+        f"Team {DEPARTMENT}\n"
+    )
 
 
 def validate_config() -> list[str]:
     """Return a list of configuration problems (empty list means all good).
 
     Checks the values that must be present and well-formed for a real run:
-    the report directory, SMTP credentials, a sender, and at least one
-    recipient. Returning a list (rather than raising) lets the caller report
-    every problem at once and decide how to react.
+    the report directory, SMTP credentials, a sender, a department name, and at
+    least one report type — each declared type having at least one recipient.
+    Returning a list (rather than raising) lets the caller report every problem
+    at once and decide how to react.
     """
     problems: list[str] = []
 
@@ -127,7 +198,17 @@ def validate_config() -> list[str]:
     if not EMAIL_FROM.strip():
         problems.append("EMAIL_FROM is empty (and no SMTP_USER to fall back to).")
 
-    if not (EMAIL_TO or EMAIL_CC or EMAIL_BCC):
-        problems.append("No recipients set (EMAIL_TO / EMAIL_CC / EMAIL_BCC).")
+    if not DEPARTMENT:
+        problems.append("DEPARTMENT is empty.")
+
+    if not REPORT_TYPES:
+        problems.append("No report types configured (REPORT_TYPES).")
+    for name, report in REPORT_CONFIGS.items():
+        if not report.has_recipients():
+            problems.append(
+                f"Report type '{name}' has no recipients "
+                f"(EMAIL_TO_{name.upper()} / EMAIL_CC_{name.upper()} / "
+                f"EMAIL_BCC_{name.upper()})."
+            )
 
     return problems

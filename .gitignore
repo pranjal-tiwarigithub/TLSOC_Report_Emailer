@@ -1,12 +1,18 @@
 # Project spec (kept out of version control per existing setup)
 PROJECT_SPEC.md
 
+# Development history log (local documentation, not shipped)
+PROJECT_HISTORY.md
+
 # Secrets / local environment — NEVER commit the real .env
 .env
 
 # Logs (the directory is tracked via logs/.gitkeep, the contents are not)
 logs/*
 !logs/.gitkeep
+tests/
+requirements-dev.txt
+
 
 # Runtime state (e.g. the "already sent today" marker, added in a later phase)
 state/*
@@ -18,3 +24,4 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+pytest.ini
