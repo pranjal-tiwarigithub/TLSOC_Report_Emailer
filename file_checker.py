@@ -1,9 +1,12 @@
 """Locating and validating report files on disk.
 
-Phase 2 + 3 + 4 scope
----------------------
+Phase 2 + 3 + 4 + 10 scope
+--------------------------
 * Phase 2 — ``find_latest_pdf``: find the newest PDF (by modification time)
   inside the configured report directory.
+* Phase 10 — ``find_todays_pdfs``: find *all* PDFs modified today (multiple
+  reports per day), and ``extract_report_type``: read the report type from a
+  ``daily_<type>_report_<date>.pdf`` filename.
 * Phase 3 — ``validate_report_filename``: confirm the chosen file's name
   contains today's (server local) date written as ``YYYY-MM-DD``. The rest of
   the filename can be anything; only the date matters here.
@@ -35,6 +38,14 @@ _PDF_MAGIC = b"%PDF-"
 # filename. The filename is otherwise unconstrained — only the presence of
 # today's date is required.
 _DATE_TOKEN_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# Matches "daily_<type>_report_<YYYY-MM-DD>.pdf" and captures the type token.
+# The type is the (non-greedy) text between "daily_" and "_report_", e.g.
+# "web" in "daily_web_report_2026-07-17.pdf". Case-insensitive.
+_REPORT_NAME_RE = re.compile(
+    r"^daily_(?P<type>.+?)_report_\d{4}-\d{2}-\d{2}\.pdf$",
+    re.IGNORECASE,
+)
 
 
 def find_latest_pdf(report_dir: Path | None = None) -> Path | None:
@@ -81,6 +92,81 @@ def find_latest_pdf(report_dir: Path | None = None) -> Path | None:
         len(pdf_files),
     )
     return latest
+
+
+def _mtime_date(path: Path) -> date | None:
+    """Return the local-time date of ``path``'s modification time, or None."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as exc:
+        logger.error("Could not read modification time: %s (%s)", path, exc)
+        return None
+    return datetime.fromtimestamp(mtime).date()
+
+
+def find_todays_pdfs(
+    report_dir: Path | None = None, today: date | None = None
+) -> list[Path]:
+    """Return every PDF in ``report_dir`` whose mtime falls on ``today``.
+
+    Unlike :func:`find_latest_pdf` (single newest file), this returns *all* of
+    today's report PDFs so each can be sent as its own email.
+
+    Args:
+        report_dir: Directory to search. Defaults to ``config.REPORT_DIR``.
+        today: Date to match mtime against. Defaults to ``date.today()``
+            (injectable for tests).
+
+    Returns:
+        Sorted list of today's ``*.pdf`` files (empty if the directory is
+        missing, is not a directory, or has none).
+    """
+    search_dir = report_dir if report_dir is not None else config.REPORT_DIR
+    today = today or date.today()
+
+    if not search_dir.exists():
+        logger.error("Report directory does not exist: %s", search_dir)
+        return []
+
+    if not search_dir.is_dir():
+        logger.error("Report path is not a directory: %s", search_dir)
+        return []
+
+    todays_pdfs = [
+        entry
+        for entry in search_dir.iterdir()
+        if entry.is_file()
+        and entry.suffix.lower() == _PDF_SUFFIX
+        and _mtime_date(entry) == today
+    ]
+
+    logger.info(
+        "Found %d PDF file(s) modified today (%s) in %s",
+        len(todays_pdfs),
+        today.isoformat(),
+        search_dir,
+    )
+    # Sorted for deterministic processing order (and stable test assertions).
+    return sorted(todays_pdfs)
+
+
+def extract_report_type(path: Path) -> str | None:
+    """Return the report type token from a ``daily_<type>_report_<date>.pdf`` name.
+
+    Args:
+        path: The candidate report file.
+
+    Returns:
+        The lowercase type (e.g. ``"web"``, ``"proxy"``) if the filename matches
+        the ``daily_<type>_report_YYYY-MM-DD.pdf`` convention, else ``None``.
+    """
+    match = _REPORT_NAME_RE.match(path.name)
+    if not match:
+        logger.warning(
+            "Filename does not match daily_<type>_report_<date>.pdf: %s", path.name
+        )
+        return None
+    return match.group("type").lower()
 
 
 def _extract_valid_dates(filename: str) -> list[date]:
