@@ -160,7 +160,7 @@ def body_for(report_type: str) -> str:
         else report_type.capitalize()
     name = report_type.lower()
     return (
-        "Hello Team,\n\n"
+        f"Hello {DEPARTMENT} Team,\n\n"
         f"Please find attached the {DEPARTMENT} {display} Monitoring Report for today. "
         "This report provides a summary of the monitoring activities, "
         "key observations of past 24 hours, "
