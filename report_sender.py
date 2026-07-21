@@ -35,7 +35,7 @@ import config
 import state_store
 from email_sender import send_alert_email, send_report_email
 from file_checker import (
-    extract_report_type,
+    extract_report_meta,
     find_todays_pdfs,
     is_pdf_file,
     validate_modification_date,
@@ -90,17 +90,23 @@ def _run(dry_run: bool, force: bool) -> int:
     had_failure = False          # drives the exit code (validation/send errors)
 
     for pdf in pdfs:
-        rtype = extract_report_type(pdf)
+        meta = extract_report_meta(pdf)
+        rtype = meta[0] if meta else None
+        subtype = meta[1] if meta else None
         if rtype is None or rtype not in config.REPORT_CONFIGS:
             detail = (
-                f"type '{rtype}' not in REPORT_TYPES"
+                f"category '{rtype}' not in REPORT_TYPES"
                 if rtype
-                else "filename does not match daily_<type>_report_<date>.pdf"
+                else "filename does not match daily_<category>_<subtype>_<date>.pdf"
             )
             note = f"Skipped unrecognized/unconfigured report {pdf.name} ({detail})."
             logger.warning(note)
             alert_notes.append(note)
             continue
+
+        # Dedup marker key is per category+subtype so two subtypes of the same
+        # category (e.g. mail/postfix and mail/exchange) are tracked separately.
+        dedup_key = f"{rtype}_{subtype}"
 
         # Per-file validation (defence in depth; find_todays_pdfs already
         # guaranteed .pdf + today's mtime, but we re-check name/content/mtime).
@@ -123,16 +129,18 @@ def _run(dry_run: bool, force: bool) -> int:
             had_failure = True
             continue
 
-        # Dedup per type (unless forced).
-        if not force and state_store.already_sent_today(rtype):
-            logger.info("Skipping '%s' — already sent today (%s).", rtype, pdf.name)
+        # Dedup per category+subtype (unless forced).
+        if not force and state_store.already_sent_today(dedup_key):
+            logger.info(
+                "Skipping '%s' — already sent today (%s).", dedup_key, pdf.name
+            )
             skipped += 1
             continue
 
         report = config.REPORT_CONFIGS[rtype]
         ok = send_report_email(
             pdf,
-            subject=config.subject_for(rtype),
+            subject=config.subject_for(rtype, subtype),
             body=config.body_for(rtype),
             to=report.to,
             cc=report.cc,
@@ -140,7 +148,7 @@ def _run(dry_run: bool, force: bool) -> int:
             dry_run=dry_run,
         )
         if not ok:
-            note = f"Sending the '{rtype}' report email failed for {pdf.name}."
+            note = f"Sending the '{dedup_key}' report email failed for {pdf.name}."
             logger.error(note)
             alert_notes.append(note)
             had_failure = True
@@ -148,9 +156,9 @@ def _run(dry_run: bool, force: bool) -> int:
 
         # Only record real sends, so a dry-run never blocks a real one.
         if not dry_run:
-            state_store.mark_sent_today(rtype)
+            state_store.mark_sent_today(dedup_key)
         sent += 1
-        logger.info("Sent '%s' report: %s", rtype, pdf.name)
+        logger.info("Sent '%s' report: %s", dedup_key, pdf.name)
 
     logger.info(
         "Run summary: %d sent, %d skipped (already sent), %d problem(s).",

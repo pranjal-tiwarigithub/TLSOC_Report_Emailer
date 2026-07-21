@@ -5,8 +5,8 @@ Phase 2 + 3 + 4 + 10 scope
 * Phase 2 — ``find_latest_pdf``: find the newest PDF (by modification time)
   inside the configured report directory.
 * Phase 10 — ``find_todays_pdfs``: find *all* PDFs modified today (multiple
-  reports per day), and ``extract_report_type``: read the report type from a
-  ``daily_<type>_report_<date>.pdf`` filename.
+  reports per day), and ``extract_report_meta``: read the routing category and
+  source subtype from a ``daily_<category>_<subtype>_<date>.pdf`` filename.
 * Phase 3 — ``validate_report_filename``: confirm the chosen file's name
   contains today's (server local) date written as ``YYYY-MM-DD``. The rest of
   the filename can be anything; only the date matters here.
@@ -39,11 +39,13 @@ _PDF_MAGIC = b"%PDF-"
 # today's date is required.
 _DATE_TOKEN_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
-# Matches "daily_<type>_report_<YYYY-MM-DD>.pdf" and captures the type token.
-# The type is the (non-greedy) text between "daily_" and "_report_", e.g.
-# "web" in "daily_web_report_2026-07-17.pdf". Case-insensitive.
+# Matches "daily_<category>_<subtype>_<YYYY-MM-DD>.pdf" and captures both the
+# routing category (2nd word) and the source subtype (3rd word), e.g.
+# "mail" + "postfix" in "daily_mail_postfix_2026-07-21.pdf". The category
+# decides recipients; the subtype is informational (shown in the subject).
+# Neither token may contain an underscore. Case-insensitive.
 _REPORT_NAME_RE = re.compile(
-    r"^daily_(?P<type>.+?)_report_\d{4}-\d{2}-\d{2}\.pdf$",
+    r"^daily_(?P<category>[^_]+)_(?P<subtype>[^_]+)_\d{4}-\d{2}-\d{2}\.pdf$",
     re.IGNORECASE,
 )
 
@@ -150,23 +152,29 @@ def find_todays_pdfs(
     return sorted(todays_pdfs)
 
 
-def extract_report_type(path: Path) -> str | None:
-    """Return the report type token from a ``daily_<type>_report_<date>.pdf`` name.
+def extract_report_meta(path: Path) -> tuple[str, str] | None:
+    """Return ``(category, subtype)`` from a ``daily_<category>_<subtype>_<date>.pdf`` name.
+
+    The 2nd word (``category``, e.g. ``mail``/``proxy``/``web``) decides which
+    recipients receive the report; the 3rd word (``subtype``, e.g.
+    ``postfix``/``squid``/``nginx``) is informational and is woven into the email
+    subject rather than affecting routing.
 
     Args:
         path: The candidate report file.
 
     Returns:
-        The lowercase type (e.g. ``"web"``, ``"proxy"``) if the filename matches
-        the ``daily_<type>_report_YYYY-MM-DD.pdf`` convention, else ``None``.
+        A ``(category, subtype)`` tuple, both lowercased, if the filename matches
+        the ``daily_<category>_<subtype>_YYYY-MM-DD.pdf`` convention, else ``None``.
     """
     match = _REPORT_NAME_RE.match(path.name)
     if not match:
         logger.warning(
-            "Filename does not match daily_<type>_report_<date>.pdf: %s", path.name
+            "Filename does not match daily_<category>_<subtype>_<date>.pdf: %s",
+            path.name,
         )
         return None
-    return match.group("type").lower()
+    return match.group("category").lower(), match.group("subtype").lower()
 
 
 def _extract_valid_dates(filename: str) -> list[date]:

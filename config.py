@@ -102,7 +102,7 @@ DEPARTMENT: str = os.getenv("DEPARTMENT", "TLSOC").strip()
 # The folder now holds multiple report PDFs per day, one per source (web,
 # email, proxy, …). REPORT_TYPES declares which types this deployment sends;
 # each type has its own recipient lists read from EMAIL_TO_<TYPE> etc.
-REPORT_TYPES: list[str] = _split_csv(os.getenv("REPORT_TYPES", "web,email,proxy"))
+REPORT_TYPES: list[str] = _split_csv(os.getenv("REPORT_TYPES", "web,mail,proxy"))
 
 
 @dataclass(frozen=True)
@@ -138,15 +138,24 @@ REPORT_CONFIGS: dict[str, ReportType] = {
 }
 
 
-def subject_for(report_type: str, today: date | None = None) -> str:
+def subject_for(
+    report_type: str, subtype: str | None = None, today: date | None = None
+) -> str:
     """Return the email subject for ``report_type`` on ``today``.
 
-    Format: ``"<DEPARTMENT> Daily <Type> Report - <YYYY-MM-DD>"``.
+    Format: ``"<DEPARTMENT> Daily <Category> Report - <Subtype> - <YYYY-MM-DD>"``,
+    e.g. ``"TLSOC Daily Mail Report - Postfix - 2026-07-21"``. When ``subtype``
+    is not supplied the subtype segment is omitted, falling back to
+    ``"<DEPARTMENT> Daily <Category> Report - <YYYY-MM-DD>"``.
+
+    ``report_type`` (the routing category) sets ``<Category>``; ``subtype`` (the
+    3rd filename word) is purely informational here and never affects routing.
     """
     today = today or date.today()
     display = REPORT_CONFIGS[report_type].display_name if report_type in REPORT_CONFIGS \
         else report_type.capitalize()
-    return f"{DEPARTMENT} Daily {display} Report - {today.isoformat()}"
+    subtype_segment = f"{subtype.capitalize()} - " if subtype else ""
+    return f"{DEPARTMENT} Daily {display} Report - {subtype_segment}{today.isoformat()}"
 
 
 def body_for(report_type: str) -> str:

@@ -1,10 +1,15 @@
 # Daily Report Sender
 
-Automatically email **each of the day's monitoring report PDFs** (web, email,
-proxy, or any type you configure) to its **own list of people**, once every day.
-Every report type gets a **separate email** whose subject and body name that
-report type and your department. It is built to run unattended on a schedule
-(via cron), but you can also run it by hand at any time.
+Automatically email **each of the day's monitoring report PDFs** (web, mail,
+proxy, or any category you configure) to its **own list of people**, once every
+day. Every report **category** gets a **separate email** whose subject names that
+category, its **source subtype**, and your department. It is built to run
+unattended on a schedule (via cron), but you can also run it by hand at any time.
+
+Report files are named `daily_<category>_<subtype>_<YYYY-MM-DD>.pdf`
+(e.g. `daily_mail_postfix_2026-07-21.pdf`): the **2nd word** (`mail`/`proxy`/`web`)
+picks the recipients, and the **3rd word** (`postfix`/`squid`/`nginx`) is shown in
+the subject but does **not** affect who receives it.
 
 If you are new to this project, read the sections in order. Every step has
 copy-paste commands.
@@ -32,27 +37,30 @@ copy-paste commands.
 Once a day the tool:
 
 1. Looks inside a folder you choose for **every PDF that was created today**.
-2. Works out each file's **report type** from its name
-   (`daily_<type>_report_<YYYY-MM-DD>.pdf` → e.g. `web`, `email`, `proxy`).
+2. Works out each file's **category** and **subtype** from its name
+   (`daily_<category>_<subtype>_<YYYY-MM-DD>.pdf` → e.g. category `mail`,
+   subtype `postfix`). The **category** decides recipients; the **subtype** is
+   informational and only appears in the subject.
 3. Checks that each PDF is really today's report:
    - the **filename contains today's date** (written as `YYYY-MM-DD`),
    - the file is a **genuine PDF** (not a renamed text file),
    - the file was **modified today** (not a leftover from a previous day).
-4. For each valid report it sends a **separate email** to **that type's own
+4. For each valid report it sends a **separate email** to **that category's own
    recipients** (To / CC / BCC), using Gmail, with the PDF attached.
-5. It **remembers per type** that it sent today, so it will not send a duplicate
-   if it runs again the same day (but a report that arrives later in the day is
+5. It **remembers per category + subtype** that it sent today, so it will not
+   send a duplicate if it runs again the same day (but a report that arrives
+   later in the day — including a different subtype of the same category — is
    still delivered).
-6. Any PDF whose type is **not configured** is skipped; anything that fails is
-   logged, and a **single alert email** to an admin address summarises every
+6. Any PDF whose category is **not configured** is skipped; anything that fails
+   is logged, and a **single alert email** to an admin address summarises every
    skipped/failed report — so a problem is never silent.
 
-**Each email looks like this** (example for the proxy report):
+**Each email looks like this** (example for `daily_proxy_squid_2026-07-21.pdf`):
 
-- **Subject:** `TLSOC Daily Proxy Report - 2026-07-17` — where `TLSOC` is your
-  configured `DEPARTMENT`, `Proxy` is the report type, and today's date is added
-  automatically.
-- **Body:** addressed to the team, naming the department and report type, e.g.
+- **Subject:** `TLSOC Daily Proxy Report - Squid - 2026-07-21` — where `TLSOC` is
+  your configured `DEPARTMENT`, `Proxy` is the category, `Squid` is the subtype,
+  and today's date is added automatically.
+- **Body:** addressed to the team, naming the department and category, e.g.
   "the TLSOC Proxy Monitoring Report for today … the current status of the
   monitored proxy assets …".
 - **Attachment:** the validated PDF.
@@ -95,16 +103,16 @@ START
 Daily_Report_Sender/
 ├── report_sender.py     # Main program you run (the entry point)
 ├── config.py            # All settings + secrets, loaded from .env
-├── file_checker.py      # Finds today's PDFs, reads each one's report type, validates
+├── file_checker.py      # Finds today's PDFs, reads each one's category+subtype, validates
 ├── email_sender.py      # Builds and sends each email via Gmail
-├── state_store.py       # Remembers, per report type, if it was already sent today
+├── state_store.py       # Remembers, per category+subtype, if it was already sent today
 ├── logger.py            # Logging to file + screen
 ├── requirements.txt     # Python packages needed
 ├── .env.example         # Template — copy this to .env and fill it in
 ├── .env                 # YOUR real settings + secrets (never shared/committed)
 ├── .gitignore
 ├── logs/                # sender.log lives here
-├── state/               # last_sent_<type>.txt (the per-type "already sent" markers)
+├── state/               # last_sent_<category>_<subtype>.txt ("already sent" markers)
 └── README.md            # This file
 ```
 
@@ -168,7 +176,7 @@ is never committed or shared. Edit it with any text editor (e.g. `nano .env`).
 | `REPORT_DIR`        | Folder to watch for the PDFs (**this is the key one**)  | `/opt/TLSOCDockerDeploy/reporting/output/pdf` |
 | `LOG_LEVEL`         | How much detail to log: `DEBUG`/`INFO`/`WARNING`/`ERROR`| `INFO`                                        |
 | `LOG_FILE`          | Where to write logs (relative = inside project)         | `logs/sender.log`                             |
-| `STATE_FILE`        | Base path for the per-type "already sent" markers       | `state/last_sent.txt`                         |
+| `STATE_FILE`        | Base path for the "already sent" markers (per category+subtype) | `state/last_sent.txt`                 |
 | `SMTP_HOST`         | Mail server                                             | `smtp.gmail.com`                              |
 | `SMTP_PORT`         | Mail server port                                        | `587`                                         |
 | `SMTP_USER`         | **Secret** — your Gmail address                         | `you@gmail.com`                               |
@@ -176,25 +184,29 @@ is never committed or shared. Edit it with any text editor (e.g. `nano .env`).
 | `EMAIL_FROM`        | "From" address (leave blank to reuse `SMTP_USER`)       | `you@gmail.com`                               |
 | `ALERT_EMAIL_TO`    | Who gets the alert if a run has skips/failures          | `admin@x.com`                                 |
 | `DEPARTMENT`        | Name shown in every subject/body                        | `TLSOC`                                       |
-| `REPORT_TYPES`      | Which report types to send (comma-separated)            | `web,email,proxy`                             |
-| `EMAIL_TO_<TYPE>`   | **To** recipients for one type (`<TYPE>` uppercased)    | `EMAIL_TO_WEB=web-team@x.com`                 |
-| `EMAIL_CC_<TYPE>`   | **CC** recipients for that type (optional)              | `EMAIL_CC_WEB=boss@x.com`                     |
-| `EMAIL_BCC_<TYPE>`  | **BCC** recipients for that type (optional, hidden)     | `EMAIL_BCC_WEB=audit@x.com`                   |
+| `REPORT_TYPES`        | Which **categories** to send (comma-separated)          | `web,mail,proxy`                              |
+| `EMAIL_TO_<CATEGORY>` | **To** recipients for one category (uppercased)         | `EMAIL_TO_MAIL=mail-team@x.com`               |
+| `EMAIL_CC_<CATEGORY>` | **CC** recipients for that category (optional)          | `EMAIL_CC_MAIL=boss@x.com`                    |
+| `EMAIL_BCC_<CATEGORY>`| **BCC** recipients for that category (optional, hidden) | `EMAIL_BCC_MAIL=audit@x.com`                  |
 
-**How report types and recipients fit together:**
-- Each type in `REPORT_TYPES` maps to a file named
-  `daily_<type>_report_<YYYY-MM-DD>.pdf` in `REPORT_DIR`, and to its own
-  `EMAIL_TO_<TYPE>` / `EMAIL_CC_<TYPE>` / `EMAIL_BCC_<TYPE>` recipients.
-  For example, `proxy` uses the file `daily_proxy_report_<today>.pdf` and the
-  `EMAIL_*_PROXY` recipients.
-- **To add a new report type**, add it to `REPORT_TYPES` and add its
-  `EMAIL_TO_<TYPE>` line (e.g. `dns` → `REPORT_TYPES=web,email,proxy,dns` plus
+**How categories, subtypes, and recipients fit together:**
+- Report files are named `daily_<category>_<subtype>_<YYYY-MM-DD>.pdf`. The
+  **category** (2nd word) is matched against `REPORT_TYPES` and chooses the
+  recipients; the **subtype** (3rd word) is only shown in the subject and never
+  affects routing.
+- Each category in `REPORT_TYPES` maps to its own
+  `EMAIL_TO_<CATEGORY>` / `EMAIL_CC_<CATEGORY>` / `EMAIL_BCC_<CATEGORY>`
+  recipients. For example, `daily_proxy_squid_<today>.pdf` and
+  `daily_proxy_haproxy_<today>.pdf` both use the `EMAIL_*_PROXY` recipients but
+  send as two separate emails (`… Proxy Report - Squid …` and `… - Haproxy …`).
+- **To add a new category**, add it to `REPORT_TYPES` and add its
+  `EMAIL_TO_<CATEGORY>` line (e.g. `dns` → `REPORT_TYPES=web,mail,proxy,dns` plus
   `EMAIL_TO_DNS=...`). No code changes needed.
-- Every declared type must have at least one recipient, or the config is
+- Every declared category must have at least one recipient, or the config is
   rejected at startup.
 - For **multiple recipients**, separate them with commas:
   `EMAIL_TO_WEB=alice@x.com,bob@y.com`. CC/BCC may be left empty.
-- A PDF whose type is **not** in `REPORT_TYPES` is skipped and named in the
+- A PDF whose category is **not** in `REPORT_TYPES` is skipped and named in the
   admin alert.
 
 ---
@@ -248,28 +260,28 @@ missing password or recipients), fix them in `.env` and run again.
 
 ### Test 1 — Dry run (no email sent)
 
-Create a sample PDF **per report type** for today and point the tool at them:
+Create a sample PDF **per category** for today and point the tool at them:
 
 ```bash
-# Make a temporary test folder + one valid PDF per configured type (today's date)
+# Make a temporary test folder + one valid PDF per configured category (today's date).
+# The 3rd word is the subtype (shown in the subject, not used for routing).
 mkdir -p /tmp/report_test
-for t in web email proxy; do
-  printf '%%PDF-1.7\nSample %s report.\n%%%%EOF\n' "$t" \
-    > /tmp/report_test/daily_${t}_report_$(date +%F).pdf
-done
+printf '%%PDF-1.7\nSample.\n%%%%EOF\n' > /tmp/report_test/daily_web_nginx_$(date +%F).pdf
+printf '%%PDF-1.7\nSample.\n%%%%EOF\n' > /tmp/report_test/daily_mail_postfix_$(date +%F).pdf
+printf '%%PDF-1.7\nSample.\n%%%%EOF\n' > /tmp/report_test/daily_proxy_squid_$(date +%F).pdf
 
 # Dry run against that folder
 REPORT_DIR=/tmp/report_test python report_sender.py --dry-run
 ```
 **Expected (in the log):**
 - `Found 3 PDF file(s) modified today (<today>)`
-- for each type: `Filename date matches today`, `Confirmed PDF signature`,
+- for each file: `Filename date matches today`, `Confirmed PDF signature`,
   `File modification date matches today`
-- `[DRY-RUN] Would send '<DEPARTMENT> Daily Web Report - <today>' ... to N recipient(s)`
-  (and the same for Email and Proxy, each to its own recipients)
+- `[DRY-RUN] Would send '<DEPARTMENT> Daily Web Report - Nginx - <today>' ... to N recipient(s)`
+  (and the same for Mail/Postfix and Proxy/Squid, each to its category's recipients)
 - `Run summary: 3 sent, 0 skipped ...` → `Daily Report Sender finished`
 
-No email is sent. This proves the whole pipeline and your per-type recipient
+No email is sent. This proves the whole pipeline and your per-category recipient
 lists are correct.
 
 ### Test 2 — Real send (real emails go out)
@@ -279,8 +291,8 @@ rm -f state/last_sent_*.txt      # clear today's markers so it will actually sen
 REPORT_DIR=/tmp/report_test python report_sender.py
 echo "exit: $?"
 ```
-**Expected:** one `Email sent to N recipient(s).` per report type and exit `0`.
-Check each type's recipients' inboxes (and spam) for the email with the PDF
+**Expected:** one `Email sent to N recipient(s).` per report and exit `0`.
+Check each category's recipients' inboxes (and spam) for the email with the PDF
 attached.
 
 ### Test 3 — Duplicate protection (it should NOT send twice)
@@ -291,25 +303,25 @@ Right after Test 2 succeeded, run it again **without** `--force`:
 REPORT_DIR=/tmp/report_test python report_sender.py
 echo "exit: $?"
 ```
-**Expected:** `'web' report already sent today ...` (and email, proxy) →
-`Run summary: 0 sent, 3 skipped ...`, exit `0`, **no email**. This is the safety
-net that prevents duplicate emails, tracked per type.
+**Expected:** `'web_nginx' report already sent today ...` (and mail_postfix,
+proxy_squid) → `Run summary: 0 sent, 3 skipped ...`, exit `0`, **no email**. This
+is the safety net that prevents duplicate emails, tracked per category+subtype.
 
 ### Test 4 — Force a resend
 
 ```bash
 REPORT_DIR=/tmp/report_test python report_sender.py --force
 ```
-**Expected:** it sends again (a fresh email per type arrives). Use this when you
+**Expected:** it sends again (a fresh email per report arrives). Use this when you
 deliberately want to re-send.
 
 ### Test 5 — Unknown / bad files
 
 ```bash
-# An unconfigured type: skipped and reported in the admin alert (still exit 0)
-printf '%%PDF-1.7\n%%%%EOF\n' > /tmp/report_test/daily_dns_report_$(date +%F).pdf
-# A configured type that is NOT a real PDF: validation fails (exit 1)
-printf 'not a pdf\n' > /tmp/report_test/daily_web_report_$(date +%F).pdf
+# An unconfigured category: skipped and reported in the admin alert (still exit 0)
+printf '%%PDF-1.7\n%%%%EOF\n' > /tmp/report_test/daily_dns_bind_$(date +%F).pdf
+# A configured category that is NOT a real PDF: validation fails (exit 1)
+printf 'not a pdf\n' > /tmp/report_test/daily_web_nginx_$(date +%F).pdf
 rm -f state/last_sent_*.txt
 REPORT_DIR=/tmp/report_test python report_sender.py
 echo "exit: $?"
@@ -351,15 +363,15 @@ while true; do
   sleep 15
 done
 ```
-In another terminal, drop a sample PDF (named for a configured type):
+In another terminal, drop a sample PDF (named for a configured category):
 ```bash
 printf '%%PDF-1.7\nLive test.\n%%%%EOF\n' \
-  > /home/pranjaltiwari/Documents/testing/daily_web_report_$(date +%F).pdf
+  > /home/pranjaltiwari/Documents/testing/daily_web_nginx_$(date +%F).pdf
 ```
-It sends that type once within ~15 seconds, then skips it. Press **Ctrl+C** to
+It sends that report once within ~15 seconds, then skips it. Press **Ctrl+C** to
 stop.
 > Tip: an empty folder just logs "nothing to do" (no alert). An **unconfigured**
-> file, however, triggers an alert every cycle — remove it or add its type.
+> file, however, triggers an alert every cycle — remove it or add its category.
 
 ---
 
@@ -381,39 +393,39 @@ grep ERROR logs/sender.log       # only errors
 
 Each line is: `timestamp | LEVEL | module | message`.
 
-**A successful run** (multiple types found, validated, emailed, recorded):
+**A successful run** (multiple reports found, validated, emailed, recorded):
 ```
-2026-07-17 13:58:30 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
-2026-07-17 13:58:30 | INFO     | __main__     | Department: TLSOC
-2026-07-17 13:58:30 | INFO     | __main__     | Report types: web, email, proxy
-2026-07-17 13:58:30 | INFO     | __main__     | Monitored report directory: /opt/TLSOCDockerDeploy/reporting/output/pdf
-2026-07-17 13:58:30 | INFO     | file_checker | Found 2 PDF file(s) modified today (2026-07-17) in /opt/TLSOCDockerDeploy/reporting/output/pdf
-2026-07-17 13:58:30 | INFO     | file_checker | Confirmed PDF signature: .../daily_proxy_report_2026-07-17.pdf
-2026-07-17 13:58:34 | INFO     | email_sender | Email sent to 1 recipient(s).
-2026-07-17 13:58:34 | INFO     | state_store  | Recorded successful send of 'proxy' for 2026-07-17 in .../state/last_sent_proxy.txt.
-2026-07-17 13:58:34 | INFO     | __main__     | Sent 'proxy' report: daily_proxy_report_2026-07-17.pdf
-2026-07-17 13:58:38 | INFO     | email_sender | Email sent to 2 recipient(s).
-2026-07-17 13:58:38 | INFO     | __main__     | Sent 'web' report: daily_web_report_2026-07-17.pdf
-2026-07-17 13:58:38 | INFO     | __main__     | Run summary: 2 sent, 0 skipped (already sent), 0 problem(s).
-2026-07-17 13:58:38 | INFO     | __main__     | === Daily Report Sender finished ===
-```
-
-**An already-sent run** (per-type duplicate protection — no email):
-```
-2026-07-17 14:01:24 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
-2026-07-17 14:01:24 | INFO     | file_checker | Found 2 PDF file(s) modified today (2026-07-17) in ...
-2026-07-17 14:01:24 | INFO     | state_store  | 'proxy' report already sent today (2026-07-17) — recorded in .../state/last_sent_proxy.txt.
-2026-07-17 14:01:24 | INFO     | __main__     | Skipping 'proxy' — already sent today (daily_proxy_report_2026-07-17.pdf).
-2026-07-17 14:01:24 | INFO     | __main__     | Run summary: 0 sent, 2 skipped (already sent), 0 problem(s).
+2026-07-21 13:58:30 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
+2026-07-21 13:58:30 | INFO     | __main__     | Department: TLSOC
+2026-07-21 13:58:30 | INFO     | __main__     | Report types: web, mail, proxy
+2026-07-21 13:58:30 | INFO     | __main__     | Monitored report directory: /opt/TLSOCDockerDeploy/reporting/output/pdf
+2026-07-21 13:58:30 | INFO     | file_checker | Found 2 PDF file(s) modified today (2026-07-21) in /opt/TLSOCDockerDeploy/reporting/output/pdf
+2026-07-21 13:58:30 | INFO     | file_checker | Confirmed PDF signature: .../daily_proxy_squid_2026-07-21.pdf
+2026-07-21 13:58:34 | INFO     | email_sender | Email sent to 1 recipient(s).
+2026-07-21 13:58:34 | INFO     | state_store  | Recorded successful send of 'proxy_squid' for 2026-07-21 in .../state/last_sent_proxy_squid.txt.
+2026-07-21 13:58:34 | INFO     | __main__     | Sent 'proxy_squid' report: daily_proxy_squid_2026-07-21.pdf
+2026-07-21 13:58:38 | INFO     | email_sender | Email sent to 2 recipient(s).
+2026-07-21 13:58:38 | INFO     | __main__     | Sent 'web_nginx' report: daily_web_nginx_2026-07-21.pdf
+2026-07-21 13:58:38 | INFO     | __main__     | Run summary: 2 sent, 0 skipped (already sent), 0 problem(s).
+2026-07-21 13:58:38 | INFO     | __main__     | === Daily Report Sender finished ===
 ```
 
-**A run with problems** (unknown type + a bad PDF — one consolidated alert):
+**An already-sent run** (per category+subtype duplicate protection — no email):
 ```
-2026-07-17 09:15:02 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
-2026-07-17 09:15:02 | WARNING  | __main__     | Skipped unrecognized/unconfigured report daily_dns_report_2026-07-17.pdf (type 'dns' not in REPORT_TYPES).
-2026-07-17 09:15:02 | ERROR    | __main__     | PDF content validation failed for daily_web_report_2026-07-17.pdf.
-2026-07-17 09:15:02 | INFO     | __main__     | Run summary: 0 sent, 0 skipped (already sent), 2 problem(s).
-2026-07-17 09:15:06 | INFO     | email_sender | Email sent to 1 recipient(s).
+2026-07-21 14:01:24 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
+2026-07-21 14:01:24 | INFO     | file_checker | Found 2 PDF file(s) modified today (2026-07-21) in ...
+2026-07-21 14:01:24 | INFO     | state_store  | 'proxy_squid' report already sent today (2026-07-21) — recorded in .../state/last_sent_proxy_squid.txt.
+2026-07-21 14:01:24 | INFO     | __main__     | Skipping 'proxy_squid' — already sent today (daily_proxy_squid_2026-07-21.pdf).
+2026-07-21 14:01:24 | INFO     | __main__     | Run summary: 0 sent, 2 skipped (already sent), 0 problem(s).
+```
+
+**A run with problems** (unknown category + a bad PDF — one consolidated alert):
+```
+2026-07-21 09:15:02 | INFO     | __main__     | === Daily Report Sender starting (Phase 13) ===
+2026-07-21 09:15:02 | WARNING  | __main__     | Skipped unrecognized/unconfigured report daily_dns_bind_2026-07-21.pdf (category 'dns' not in REPORT_TYPES).
+2026-07-21 09:15:02 | ERROR    | __main__     | PDF content validation failed for daily_web_nginx_2026-07-21.pdf.
+2026-07-21 09:15:02 | INFO     | __main__     | Run summary: 0 sent, 0 skipped (already sent), 2 problem(s).
+2026-07-21 09:15:06 | INFO     | email_sender | Email sent to 1 recipient(s).
 ```
 
 > In the last example the final "Email sent" line is the single **alert** going
@@ -426,14 +438,14 @@ Each line is: `timestamp | LEVEL | module | message`.
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | `Problems: ... SMTP_PASSWORD is not set` | Fill `SMTP_PASSWORD` in `.env` with your **App Password** (not your normal password). |
-| `Problems: Report type 'X' has no recipients` | Add `EMAIL_TO_X=...` (uppercased) in `.env`, or remove `X` from `REPORT_TYPES`. |
+| `Problems: Report type 'X' has no recipients` | Add `EMAIL_TO_X=...` (category uppercased) in `.env`, or remove `X` from `REPORT_TYPES`. |
 | `Username and Password not accepted` | You used your normal Gmail password. Create an **App Password** and use that. |
 | `Nothing to do — no report PDFs modified today` | `REPORT_DIR` is wrong/empty, or no PDF in it was modified today. |
-| `Skipped unrecognized/unconfigured report ...` | The file's type isn't in `REPORT_TYPES`, or its name isn't `daily_<type>_report_<date>.pdf`. Add the type, or fix the name. |
+| `Skipped unrecognized/unconfigured report ...` | The file's category (2nd word) isn't in `REPORT_TYPES`, or its name isn't `daily_<category>_<subtype>_<date>.pdf`. Add the category, or fix the name. |
 | `Filename date(s) ... do not match today` | The PDF name does not contain today's date (`YYYY-MM-DD`). |
 | `File is not a valid PDF` | The file is not a real PDF (e.g. a renamed text file). |
 | `File modification date ... is not today` | The file is old. Re-create it today, or run `touch yourfile.pdf`. |
-| It says a type is "already sent today" but I want to resend | Use `--force`, or `rm -f state/last_sent_<type>.txt`. |
+| It says a report is "already sent today" but I want to resend | Use `--force`, or `rm -f state/last_sent_<category>_<subtype>.txt`. |
 | Nothing happens when cron should run | See the cron section below (paths, timezone). |
 
 ---
